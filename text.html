@@ -1,0 +1,254 @@
+<form id="dataSubscriptionForm" autocomplete="off">
+<div class="form-group">
+<label for="name">Cable Name</label>
+<select id="name" name="name" required>
+<option value="">Select cable name</option>
+</select>
+</div>
+
+<div class="form-group">
+<label for="plan">Cable Plan</label>
+<select id="plan" name="plan" required disabled>
+<option value="">Select Plan</option>
+</select>
+</div>
+
+<div class="form-group">
+<label for="iuc">IUC/Smartcard Number</label>
+<input type="text" id="iuc" name="iuc" required placeholder="Enter your IUC/Smartcard number">
+</div>
+<div id="iuc-info" style="margin-top:10px;font-weight:bold;"></div>
+
+<div class="form-group">
+<label for="phone">Phone Number</label>
+<input type="tel" id="phone" name="phone" required placeholder="Enter recipient phone e.g. 08012345678">
+</div>
+
+
+<button id="purchase-btn" class="btn btn-primary" type="submit" disabled>
+Purchase
+<span id="btnLoader" style="display:none; font-size:22px; margin-left:6px;">
+<i class="fa fa-spinner fa-spin"></i>
+</span>
+</button>
+</form>
+
+
+
+<script>
+// -------- Global refs
+const $name = $('#name');
+const $plan = $('#plan');
+const $iuc = $('#iuc');
+const $iucInfo = $('#iuc-info');
+const $purchaseBtn = $('#purchase-btn');
+const $btnLoader = $('#btnLoader');
+const $phone = $('#phone');
+
+let verifiedCustomer = null;
+
+// -------- Helper: NG phone validator (simple)
+function isValidPhone(phone) {
+ const cleaned = phone.replace(/\s+/g, '');
+ return (/^0\d{10}$/).test(cleaned) || (/^\+234\d{10}$/).test(cleaned);
+}
+
+// -------- Load providers on page load
+$.ajax({
+ url: 'server/cable-tv/get_cable.php',
+ type: 'GET',
+ success: function (response) {
+  if (response.success) {
+   response.providers.forEach(p => {
+    $name.append(`<option value="${p.id}">${p.name}</option>`);
+   });
+  } else {
+   Swal.fire("Error", 'Failed to fetch cable names: ' + (response.message || 'Please try again.'), "error");
+  }
+ },
+ error: function () {
+  Swal.fire("Error", "Error fetching cable names.", "error");
+ }
+});
+
+// -------- Load plans when provider changes
+$name.on('change', function () {
+ const providerId = $(this).val();
+ $plan.prop('disabled', true).html('<option value="">Select Plan</option>');
+ $iucInfo.text('');
+ verifiedCustomer = null;
+ $purchaseBtn.prop('disabled', true);
+
+ if (providerId) {
+  $.ajax({
+   url: 'server/cable-tv/get_cable.php',
+   type: 'GET',
+   success: function (response) {
+    if (response.success && response.data[providerId]) {
+     const plans = response.data[providerId];
+     $plan.prop('disabled', false);
+     plans.forEach(plan => {
+      $plan.append(
+       `<option value="${plan.code}" data-amount="${plan.amount}">
+        ${plan.description}
+       </option>`
+      );
+     });
+
+     const iucNumber = $iuc.val().trim();
+     if (iucNumber.length >= 8) {
+      verifyIUC(providerId, iucNumber);
+     }
+    } else {
+     Swal.fire("No Plans", "No plans available for this cable.", "warning");
+    }
+   },
+   error: function () {
+    Swal.fire("Error", "Failed to fetch plans. Please try again.", "error");
+   }
+  });
+ }
+});
+
+// -------- Verify IUC when user types (debounced)
+let iucTimeout;
+$iuc.on('input', function () {
+ clearTimeout(iucTimeout);
+ const iucNumber = $(this).val().trim();
+ const providerId = $name.val();
+
+ $iucInfo.text('');
+ verifiedCustomer = null;
+ $purchaseBtn.prop('disabled', true);
+
+ if (iucNumber.length >= 8 && providerId) {
+  iucTimeout = setTimeout(function () {
+   verifyIUC(providerId, iucNumber);
+  }, 800);
+ }
+});
+
+// -------- IUC verification
+function verifyIUC(providerId, iucNumber) {
+ $iucInfo.css("color", "orange").text("Verifying IUC...");
+ verifiedCustomer = null;
+
+ $.ajax({
+  url: 'https://www.nellobytesystems.com/APIVerifyCableTVV1.0.asp',
+  type: 'GET',
+  data: {
+   UserID: <?= json_encode($apidata_user); ?>,
+   APIKey: <?= json_encode($apidata_key); ?>,
+   CableTV: providerId,
+   SmartCardNo: iucNumber
+  },
+  success: function (response) {
+   try {
+    const data = typeof response === "string" ? JSON.parse(response) : response;
+    const name = data.customer_name || data.Customer_Name;
+
+    if (name) {
+     verifiedCustomer = name;
+     $iucInfo.css("color", "green").text("✔ " + name);
+     if ($plan.val() && isValidPhone($phone.val())) {
+      $purchaseBtn.prop("disabled", false);
+     }
+    } else {
+     $iucInfo.css("color", "red").text("Invalid IUC/Smartcard Number");
+    }
+   } catch (e) {
+    $iucInfo.css("color", "red").text("Invalid response from server");
+   }
+  },
+  error: function () {
+   $iucInfo.css("color", "red").text("Error verifying IUC. Please try again.");
+  }
+ });
+}
+
+// -------- Enable/disable purchase button on plan/phone changes
+$plan.on('change', function () {
+ if (verifiedCustomer && isValidPhone($phone.val()) && $(this).val()) {
+  $purchaseBtn.prop('disabled', false);
+ } else {
+  $purchaseBtn.prop('disabled', true);
+ }
+});
+
+$phone.on('input', function () {
+ if (verifiedCustomer && isValidPhone($(this).val()) && $plan.val()) {
+  $purchaseBtn.prop('disabled', false);
+ } else {
+  $purchaseBtn.prop('disabled', true);
+ }
+});
+
+// -------- Submit transaction
+$('#dataSubscriptionForm').on('submit', function (e) {
+ e.preventDefault();
+
+ const provider = $name.val();
+ const plan = $plan.val();
+ const iuc = $iuc.val().trim();
+ const phone = $phone.val().trim();
+
+ if (!provider || !plan || !iuc || !phone) {
+  Swal.fire("Missing Info", "Please complete all fields.", "warning");
+  return;
+ }
+ if (!verifiedCustomer) {
+  Swal.fire("Invalid IUC", "Please verify a valid IUC/Smartcard number first.", "error");
+  return;
+ }
+ if (!isValidPhone(phone)) {
+  Swal.fire("Invalid Phone", "Please enter a valid Nigerian phone number.", "error");
+  return;
+ }
+
+ $purchaseBtn.prop('disabled', true);
+ $btnLoader.show();
+
+ const payload = {
+  provider,
+  plan,
+  iuc,
+  phone,
+  customer_name: verifiedCustomer,
+  amount: $("#plan option:selected").data("amount")
+ };
+
+ $.ajax({
+  url: 'server/cable-tv/submit_transaction.php',
+  type: 'POST',
+  data: payload,
+  success: function (res) {
+   try {
+    const data = typeof res === "string" ? JSON.parse(res) : res;
+    if (data.success) {
+     Swal.fire("Success ✅", 'Subscription submitted for ' + verifiedCustomer + '. ' + (data.message || ''), "success")
+      .then(() => location.reload());
+    } else {
+     Swal.fire("Failed ❌", 'Transaction failed: ' + (data.message || 'Unknown error'), "error");
+     $purchaseBtn.prop('disabled', false);
+    }
+   } catch (err) {
+    Swal.fire("Error", "Invalid response from server.", "error");
+    $purchaseBtn.prop('disabled', false);
+   }
+  },
+  error: function () {
+   Swal.fire("Error", "Error submitting transaction. Please try again.", "error");
+   $purchaseBtn.prop('disabled', false);
+  },
+  complete: function () {
+   $btnLoader.hide();
+  }
+ });
+});
+</script>
+
+
+
+<script> let transactions = []; let currentPage = 1; const perPage = 5; let currentTx = null; function loadTransactions() { let type = $('#transactionType').val(); let startDate = $('#startDate').val(); let endDate = $('#endDate').val(); $.getJSON(server/fetch_transactions.php, { type, start: startDate, end: endDate }, function(data){ transactions = data; currentPage = 1; renderTable(); }); } function renderTable() { let tbody = $("#transactionTable tbody"); tbody.empty(); let start = (currentPage - 1) * perPage; let end = start + perPage; let pageItems = transactions.slice(start, end); pageItems.forEach(tx => { let statusClass = "badge-secondary"; if(tx.status.toLowerCase() === "success") statusClass = "badge-success"; else if(tx.status.toLowerCase() === "failed" || tx.status.toLowerCase() === "error") statusClass = "badge-danger"; else if(tx.status.toLowerCase() === "pending") statusClass = "badge-warning"; let row = $( <tr> <td>${tx.id}</td> <td> ${ (() => { const id = Number(tx.network); // converts "01" -> 1, "02" -> 2, etc. switch(id) { case 1: return "MTN"; case 2: return "Glo"; case 3: return "9Mobile"; case 4: return "Airtel"; default: return tx.networkID || tx.service || "Transaction"; } })() } </td> <td>₦${parseFloat(tx.amount).toFixed(2)}</td> <td><span class="badge ${statusClass}">${tx.status}</span></td> <td>${tx.phone || tx.mobile_number || tx.phone_no}</td> <td>${tx.discription}</td> <td>${tx.created_at}</td> <td><button class="btn btn-info btn-sm view-btn">View</button></td> </tr> ); row.find(".view-btn").on("click", () => viewTransaction(tx)); tbody.append(row); }); $("#pageIndicator").text(Page ${currentPage}); } function nextPage() { if ((currentPage * perPage) < transactions.length) { currentPage++; renderTable(); } } function prevPage() { if (currentPage > 1) { currentPage--; renderTable(); } } function viewTransaction(tx) { currentTx = tx; // Build receipt-like HTML let details = <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto;"> <div style="text-align: center; margin-bottom: 20px;"> <img src="assets/img/bill-logo/3.png" alt="Logo" style="height: 60px;" /> <h4 style="margin: 8px 0;">Transaction Receipt</h4> </div> <table style="width: 100%; border-collapse: collapse; font-size: 12px;"> <tr><td style="padding: 6px; border-bottom: 1px solid #ccc;">Transaction ID</td><td style="padding: 6px; border-bottom: 1px solid #ccc;">${tx.id}</td></tr> <tr><td style="padding: 6px; border-bottom: 1px solid #ccc;">Transaction Date</td><td style="padding: 6px; border-bottom: 1px solid #ccc;">${tx.created_at}</td></tr> <tr><td style="padding: 6px; border-bottom: 1px solid #ccc;">Discription</td><td style="padding: 6px; border-bottom: 1px solid #ccc;">${tx.discription || 'N/A'}</td></tr> <tr><td style="padding: 6px; border-bottom: 1px solid #ccc;">Status</td><td style="padding: 6px; border-bottom: 1px solid #ccc;">${tx.status}</td></tr> <tr><td style="padding: 6px; border-bottom: 1px solid #ccc;">Service / Product</td><td style="padding: 6px; border-bottom: 1px solid #ccc;"> ${ (() => { const id = Number(tx.network); // converts "01" -> 1, "02" -> 2, etc. switch(id) { case 1: return "MTN"; case 2: return "Glo"; case 3: return "9Mobile"; case 4: return "Airtel"; default: return tx.networkID || tx.service || "Transaction"; } })() }</td> </tr> <tr><td style="padding: 6px; border-bottom: 1px solid #ccc;">Amount</td><td style="padding: 6px; border-bottom: 1px solid #ccc;">₦${parseFloat(tx.amount).toFixed(2)}</td></tr> ${tx.mobilenumber ? <tr><td style="padding: 6px; border-bottom: 1px solid #ccc;">Mobile Number</td><td style="padding: 6px; border-bottom: 1px solid #ccc;">${tx.mobilenumber}</td></tr> : ''} ${tx.phone || tx.mobile_number || tx.phone_no ? <tr><td style="padding: 6px; border-bottom: 1px solid #ccc;">Mobile Number</td><td style="padding: 6px; border-bottom: 1px solid #ccc;">${tx.phone || tx.mobile_number || tx.phone_no}</td></tr> : ''} ${tx.token ? <tr><td style="padding: 6px; border-bottom: 1px solid #ccc;">Token</td><td style="padding: 6px; border-bottom: 1px solid #ccc;">${tx.token}</td></tr> : ''} </table> <p style="text-align:center; margin-top: 5px; font-size: 10px;">Website: https://www.giiaa.co</p> </div> ; $("#transactionDetails").html(details); $("#transactionModal").modal('show'); } function downloadAsPDF() { if (!currentTx) return; const { jsPDF } = window.jspdf; let pdf = new jsPDF(); pdf.text("Transaction Details", 20, 20); pdf.text($("#transactionDetails").text(), 20, 30); pdf.save("transaction.pdf"); } function downloadAsImage() { if (!currentTx) return; html2canvas(document.getElementById("transactionDetails")).then(canvas => { let link = document.createElement("a"); link.download = "transaction.png"; link.href = canvas.toDataURL(); link.click(); }); } function shareTransaction() { if (!currentTx) return; if (navigator.share) { navigator.share({ title: "Transaction Details", text: $("#transactionDetails").text() }); } else { alert("Sharing not supported on this device"); } } $(document).ready(loadTransactions); </script>
+
+DO THE SAME THING HERE
