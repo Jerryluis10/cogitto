@@ -1487,7 +1487,7 @@ overflow: hidden;
         }
 
          .ac-chat-send{
-            position: relative;
+            position: fixed;
             bottom: 0;
             width: 100%;
             background: var(--color-background);
@@ -1521,6 +1521,7 @@ padding: 0 15px;
         }
 
         }
+
 
 
 
